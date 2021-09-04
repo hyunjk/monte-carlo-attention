@@ -6,6 +6,7 @@
 #include "attention.cuh"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("simple_mca", &mca::simple_mca);
     m.def("monte_carlo_multihead_attention", &mca::monte_carlo_multihead_attention);
     m.def("eval_sampling_prob_cdf", &mca::eval_sampling_prob_cdf);
 }

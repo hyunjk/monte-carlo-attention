@@ -43,6 +43,76 @@ namespace mca {
     }
 
 
+
+    /**
+     *
+     * Approximate multi-head attention
+     *
+     * @param attn (num_heads, seq_length, seq_length)
+     * @param input (seq_length, input_dim) 입력 feature map
+     * @param weight (output_dim, input_dim) PyTorch와 바로 호환 가능하도록 output이 먼저 오는 형식.
+     * @param bias (output_dim)
+     * @param num_trials (num_heads, seq_length) 몇 개의 행을 랜덤 샘플링할지의 시행 횟수
+     * @param sampling_prob_cdf (num_heads, input_dim) 몇 개의 행을 랜덤 샘플링할지의 시행 횟수
+     * @return (seq_length, output_dim)
+     */
+    torch::Tensor simple_mca(
+            const torch::Tensor &input, const torch::Tensor &weight,
+            const torch::Tensor &bias,
+            const torch::Tensor &num_trials, const torch::Tensor &sampling_prob_cdf) {
+
+        CHECK_INPUT(input)
+        CHECK_INPUT(weight)
+        CHECK_INPUT(bias)
+        CHECK_INPUT(num_trials)
+        CHECK_INPUT(sampling_prob_cdf)
+
+        const int num_heads = (int) num_trials.size(0);
+        const int seq_length = (int) num_trials.size(1);
+        const int output_dim = (int) weight.size(0);
+        const int input_dim = (int) weight.size(1);
+        const int head_dim = output_dim / num_heads;
+
+        TORCH_CHECK(output_dim % num_heads == 0, "invalid head size in num_trials")
+
+        torch::Tensor value = torch::empty({num_heads, seq_length, head_dim},
+                                           torch::device(weight.device()).dtype(torch::kFloat32));
+
+        float *random_samples;
+        cudaMalloc(&random_samples, num_heads * input_dim * sizeof(float));
+        random_uniform(random_samples, num_heads * input_dim);
+
+        dim3 grid_dim(num_heads, seq_length);
+        const int buffer_size = (3 * input_dim) * (int) sizeof(float);
+
+        monte_carlo_multihead_attention_kernel<<<grid_dim, head_dim, buffer_size>>>(
+                input.data_ptr<float>(),
+                weight.data_ptr<float>(),
+                num_trials.data_ptr<int>(),
+                sampling_prob_cdf.data_ptr<float>(),
+                random_samples,
+                value.data_ptr<float>(),
+                num_heads, seq_length, input_dim, output_dim);
+        cudaFree(random_samples);
+
+        cudaDeviceSynchronize();
+
+        // check for error
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            // print the CUDA error message and exit
+            printf("after CUDA error: %s\n", cudaGetErrorString(error));
+            exit(-1);
+        }
+
+        torch::Tensor output = value + bias.view({num_heads, 1, head_dim});
+        output = torch::transpose(output, 0, 1).reshape({seq_length, output_dim});
+
+        return output;
+
+    }
+
+
     /**
      *
      * Approximate multi-head attention

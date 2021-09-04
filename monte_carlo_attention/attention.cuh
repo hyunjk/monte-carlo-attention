@@ -19,6 +19,11 @@ namespace mca {
 
     torch::Tensor eval_sampling_prob_cdf(const torch::Tensor &weight, int num_heads);
 
+    torch::Tensor simple_mca(
+            const torch::Tensor &input, const torch::Tensor &weight,
+            const torch::Tensor &bias,
+            const torch::Tensor &num_trials, const torch::Tensor &sampling_prob_cdf);
+
     torch::Tensor monte_carlo_multihead_attention(
             const torch::Tensor &attn, const torch::Tensor &input, const torch::Tensor &weight,
             const torch::Tensor &bias,

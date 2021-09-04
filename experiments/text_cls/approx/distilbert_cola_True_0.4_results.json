@@ -1,0 +1,11 @@
+[
+    {
+        "eval_loss": 0.4938471019268036,
+        "eval_matthews_correlation": 0.54399922446675,
+        "eval_runtime": 11.8716,
+        "eval_samples": 1043,
+        "eval_samples_per_second": 87.857,
+        "eval_steps_per_second": 87.857,
+        "flops": 0.08111366652757092
+    }
+]

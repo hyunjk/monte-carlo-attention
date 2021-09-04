@@ -103,6 +103,7 @@ def multi_rand_attn(a, x, w):
     # get importance matrix
     # max-reduce last dimension (m, n)
     v, _ = torch.max(a, dim=1)  # torch.ones(n)
+
     # v = torch.ones((h, n)).cuda()
 
     # (p, q) -> (p, h, q')
@@ -128,7 +129,12 @@ def multi_rand_attn(a, x, w):
 # x: (n, p)
 # w: (p, q)
 # out: (n, q)
-def multi_rand_attn_cuda(a, x, w, bias, p_cdf=None):
+
+prec_one = None
+
+def multi_rand_attn_cuda(a, x, w, bias, p_cdf=None, alpha=1.0, use_mca=False):
+    global prec_one
+
     h, n, n_ = a.shape
     n__, d_in = x.shape
     d_out, d_in_ = w.shape
@@ -141,11 +147,15 @@ def multi_rand_attn_cuda(a, x, w, bias, p_cdf=None):
     assert hd_out * h == d_out
     # (H, N)
 
-    v, _ = torch.max(a, 1)  # hard fix!
-    # v = torch.ones_like(v)
+    if use_mca:
+        v, _ = torch.max(a, 1)  # hard fix!
+        res = torch.clamp_max(torch.pow(v * n / alpha, 2), d_in).int()
+    else:
+        if prec_one is None:
+            prec_one = torch.ones((h, n)).cuda()
+        res = (prec_one * d_in).int()  # resolution이 0이 되면 안된다.
 
-    # res = (v * d_in).int()  # resolution이 0이 되면 안된다.
-    res = torch.clamp_max(v * d_in * 3, d_in).int()
+    reduced_flops = torch.mean(res / d_in).item()
 
     # (H, D_IN)
     # 한번만 계산하면 됨.
@@ -154,7 +164,7 @@ def multi_rand_attn_cuda(a, x, w, bias, p_cdf=None):
 
     result = mca.monte_carlo_multihead_attention(a, x, w, bias, res, p_cdf)
 
-    return result
+    return result, reduced_flops
 
 
 def get_p_cdf_from_w(w, h):

@@ -15,13 +15,14 @@
 # limitations under the License.
 """ Finetuning the library models for sequence classification on GLUE."""
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
-
+import json
 import logging
 import os
 import random
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+
 sys.path.append('../../')
 
 import modified
@@ -46,7 +47,6 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.10.0.dev0")
@@ -92,7 +92,7 @@ class DataTrainingArguments:
         default=128,
         metadata={
             "help": "The maximum total input sequence length after tokenization. Sequences longer "
-            "than this will be truncated, sequences shorter will be padded."
+                    "than this will be truncated, sequences shorter will be padded."
         },
     )
     overwrite_cache: bool = field(
@@ -102,28 +102,28 @@ class DataTrainingArguments:
         default=True,
         metadata={
             "help": "Whether to pad all samples to `max_seq_length`. "
-            "If False, will pad the samples dynamically when batching to the maximum length in the batch."
+                    "If False, will pad the samples dynamically when batching to the maximum length in the batch."
         },
     )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     max_eval_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     max_predict_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of prediction examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     train_file: Optional[str] = field(
@@ -148,7 +148,7 @@ class DataTrainingArguments:
             assert train_extension in ["csv", "json"], "`train_file` should be a csv or a json file."
             validation_extension = self.validation_file.split(".")[-1]
             assert (
-                validation_extension == train_extension
+                    validation_extension == train_extension
             ), "`validation_file` should have the same extension (csv or json) as `train_file`."
 
 
@@ -156,11 +156,30 @@ class DataTrainingArguments:
 class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
+
     """
 
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
+    transformer_type: str = field(
+        metadata={"help": "Transformer type used"}
+    )
+
+    alpha: float = field(
+        default=1.0, metadata={"help": "alpha value"}
+    )
+
+    use_mca: bool = field(
+        default=False, metadata={"help": "use mca"}
+    )
+    eval_repeat: int = field(
+        default=10,
+        metadata={
+            "help": "eval repeat"
+        },
+    )
+
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
@@ -183,7 +202,7 @@ class ModelArguments:
         default=False,
         metadata={
             "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
-            "with private models)."
+                    "with private models)."
         },
     )
 
@@ -272,7 +291,7 @@ def main():
                 train_extension = data_args.train_file.split(".")[-1]
                 test_extension = data_args.test_file.split(".")[-1]
                 assert (
-                    test_extension == train_extension
+                        test_extension == train_extension
                 ), "`test_file` should have the same extension (csv or json) as `train_file`."
                 data_files["test"] = data_args.test_file
             else:
@@ -338,7 +357,16 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    modified.inject(model.bert)
+    if model_args.transformer_type == "bert":
+        modified.inject_bert(model.bert, model_args.alpha, model_args.use_mca)
+    elif model_args.transformer_type == "distilbert":
+        modified.inject_distilbert(model.distilbert, model_args.alpha, model_args.use_mca)
+        pass
+    elif model_args.transformer_type == "longformer":
+        modified.inject_longformer(model.longformer, model_args.alpha, model_args.use_mca)
+    else:
+        print('unrecognized transformer!')
+        exit(0)
 
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
@@ -364,9 +392,9 @@ def main():
     # Some models have set the order of the labels to use, so let's make sure we do use it.
     label_to_id = None
     if (
-        model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
-        and data_args.task_name is not None
-        and not is_regression
+            model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
+            and data_args.task_name is not None
+            and not is_regression
     ):
         # Some have all caps in their config, some don't.
         label_name_to_id = {k.lower(): v for k, v in model.config.label2id.items()}
@@ -508,16 +536,37 @@ def main():
             tasks.append("mnli-mm")
             eval_datasets.append(raw_datasets["validation_mismatched"])
 
+        specific_model = None
+        if model_args.transformer_type == "bert":
+            specific_model = model.bert
+        elif model_args.transformer_type == "distilbert":
+            specific_model = model.distilbert
+            pass
+        elif model_args.transformer_type == "longformer":
+            specific_model = model.longformer
+
         for eval_dataset, task in zip(eval_datasets, tasks):
-            metrics = trainer.evaluate(eval_dataset=eval_dataset)
 
-            max_eval_samples = (
-                data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-            )
-            metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+            summary = []
 
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
+            for k in range(model_args.eval_repeat):
+                specific_model.tracker.flops = []
+                metrics = trainer.evaluate(eval_dataset=eval_dataset)
+
+                max_eval_samples = (
+                    data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+                )
+                metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+                metrics["flops"] = sum(specific_model.tracker.flops) / len(specific_model.tracker.flops)
+
+                summary.append(metrics)
+                trainer.log_metrics("eval", metrics)
+                trainer.save_metrics("eval", metrics)
+
+            path = os.path.join(training_args.output_dir,
+                                f"{model_args.transformer_type}_{data_args.task_name}_{model_args.use_mca}_{model_args.alpha}_results.json")
+            with open(path, "w") as f:
+                json.dump(summary, f, indent=4, sort_keys=True)
 
     if training_args.do_predict:
         logger.info("*** Predict ***")
